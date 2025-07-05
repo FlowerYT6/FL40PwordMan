@@ -1,22 +1,275 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Password Manager</title>
+  <title>Flower_r4sr0 Password Manager</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="stylesheet" href="styles.css">
+  <style>
+    body { font-family: sans-serif; padding: 10px; background: #f4f4f4; }
+    input, button { margin: 5px 0; padding: 10px; width: 100%; box-sizing: border-box; }
+    #entryList { list-style: none; padding: 0; }
+    #entryList li {
+      background: #fff;
+      margin: 10px 0;
+      padding: 10px;
+      border-left: 5px solid #4caf50;
+    }
+    .modal {
+      position: fixed; z-index: 999; left: 0; top: 0; width: 100%; height: 100%;
+      background-color: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center;
+    }
+    .modal-content {
+      background: white; padding: 20px; border-radius: 8px; width: 90%;
+      max-width: 400px; box-shadow: 0 0 10px rgba(0,0,0,0.5);
+    }
+    .modal-buttons {
+      display: flex; justify-content: flex-end; gap: 10px; margin-top: 10px;
+    }
+  </style>
 </head>
 <body>
-  <h2>🔐 Password Vault</h2>
-  <input type="password" id="masterPassword" placeholder="Master Password">
-  <button onclick="unlock()">Unlock</button>
 
-  <div id="app" style="display:none;">
-    <button onclick="addEntry()">+ Add Entry</button>
-    <input type="text" id="search" placeholder="Search..." oninput="searchEntries(this.value)">
-    <ul id="entryList"></ul>
+<!-- Login -->
+<div id="loginContainer">
+  <h2>🔑 Login</h2>
+  <input type="text" id="loginUsername" placeholder="Username">
+  <input type="password" id="loginPassword" placeholder="Password">
+  <button onclick="register()">Register</button>
+  <button onclick="login()">Login</button>
+</div>
+
+<!-- Vault -->
+<h2 style="display:none;">🔐 Password Vault</h2>
+<input type="password" id="masterPassword" placeholder="Master Password" style="display:none;">
+<div id="app" style="display:none;">
+  <button onclick="addEntry()">+ Add Entry</button>
+  <input type="text" id="search" placeholder="Search..." oninput="searchEntries(this.value)">
+  <ul id="entryList"></ul>
+</div>
+
+<!-- Modals -->
+<div id="customPrompt" class="modal" style="display:none;">
+  <div class="modal-content">
+    <p id="promptMessage"></p>
+    <input type="text" id="promptInput">
+    <div class="modal-buttons">
+      <button onclick="confirmPrompt()">OK</button>
+      <button onclick="cancelPrompt()">Cancel</button>
+    </div>
   </div>
+</div>
 
-  <script src="crypto.js"></script>
-  <script src="script.js"></script>
+<div id="customAlert" class="modal" style="display:none;">
+  <div class="modal-content">
+    <p id="alertMessage"></p>
+    <div class="modal-buttons">
+      <button onclick="closeAlert()">OK</button>
+    </div>
+  </div>
+</div>
+
+<script>
+async function awaitPrompt(message) {
+  return new Promise(resolve => {
+    showPrompt(message, resolve);
+  });
+}
+
+function showAlert(msg) {
+  document.getElementById("alertMessage").innerText = msg;
+  document.getElementById("customAlert").style.display = "flex";
+}
+function closeAlert() {
+  document.getElementById("customAlert").style.display = "none";
+}
+let promptCallback = null;
+function showPrompt(msg, callback) {
+  document.getElementById("promptMessage").innerText = msg;
+  document.getElementById("promptInput").value = "";
+  document.getElementById("customPrompt").style.display = "flex";
+  promptCallback = callback;
+}
+function confirmPrompt() {
+  const value = document.getElementById("promptInput").value;
+  document.getElementById("customPrompt").style.display = "none";
+  if (promptCallback) promptCallback(value);
+}
+function cancelPrompt() {
+  document.getElementById("customPrompt").style.display = "none";
+  if (promptCallback) promptCallback(null);
+}
+
+// Login system
+function register() {
+  const user = document.getElementById('loginUsername').value;
+  const pass = document.getElementById('loginPassword').value;
+  if (!user || !pass) return showAlert("Enter both username and password.");
+  localStorage.setItem("pm_user", user);
+  localStorage.setItem("pm_pass", pass);
+  showAlert("User registered!");
+}
+function login() {
+  const user = document.getElementById('loginUsername').value;
+  const pass = document.getElementById('loginPassword').value;
+  const savedUser = localStorage.getItem("pm_user");
+  const savedPass = localStorage.getItem("pm_pass");
+  if (user === savedUser && pass === savedPass) {
+    document.querySelector("#loginContainer").style.display = "none";
+    document.querySelector("h2").style.display = "block";
+    document.getElementById("masterPassword").value = pass;
+    document.getElementById("masterPassword").style.display = "none";
+    unlock();
+  } else {
+    showAlert("Incorrect username or password.");
+  }
+}
+
+// Encryption
+let key;
+async function generateKey(password) {
+  const enc = new TextEncoder();
+  const salt = new Uint8Array(16);
+  const baseKey = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']);
+  key = await crypto.subtle.deriveKey({
+    name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256'
+  }, baseKey, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+}
+async function encryptData(data, key) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encoded = new TextEncoder().encode(JSON.stringify(data));
+  const cipher = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, encoded);
+  return { iv: Array.from(iv), data: Array.from(new Uint8Array(cipher)) };
+}
+async function decryptData(encrypted, iv, key) {
+  const decrypted = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: new Uint8Array(iv) }, key, new Uint8Array(encrypted)
+  );
+  return JSON.parse(new TextDecoder().decode(decrypted));
+}
+
+let entries = [];
+function saveVault() {
+  encryptData(entries, key).then(encrypted => {
+    localStorage.setItem('vault', JSON.stringify(encrypted));
+  });
+}
+function loadVault() {
+  const vault = localStorage.getItem('vault');
+  if (!vault) return;
+  const parsed = JSON.parse(vault);
+  decryptData(parsed.data, parsed.iv, key).then(decrypted => {
+    entries = decrypted;
+    renderList();
+  }).catch(() => showAlert("Decryption failed — wrong password?"));
+}
+
+const appIcons = {
+  "YouTube": "https://upload.wikimedia.org/wikipedia/commons/b/b8/YouTube_Logo_2017.svg",
+  "Instagram": "https://upload.wikimedia.org/wikipedia/commons/e/e7/Instagram_logo_2016.svg"
+};
+
+function unlock() {
+  const masterPassword = document.getElementById('masterPassword').value;
+  generateKey(masterPassword).then(() => {
+    loadVault();
+    document.getElementById('app').style.display = 'block';
+  });
+}
+
+async function addEntry() {
+  const type = (await awaitPrompt("Type 'wifi' or 'account':")).toLowerCase();
+  const name = await awaitPrompt("Entry name:");
+  if (type === "wifi") {
+    const entry = {
+      name, type: "wifi",
+      ssid: await awaitPrompt("SSID:"),
+      password: await awaitPrompt("Password:"),
+      security: await awaitPrompt("Security:"),
+      signal: await awaitPrompt("Signal:"),
+      routerIP: await awaitPrompt("Router IP:"),
+      deviceIP: await awaitPrompt("Device IP:"),
+      subnet: await awaitPrompt("Subnet Mask:"),
+      dns: await awaitPrompt("DNS:")
+    };
+    entries.push(entry);
+  } else {
+    const websites = [];
+    let site;
+    while ((site = await awaitPrompt("Add website URL (leave blank to stop):"))) websites.push(site);
+
+    const apps = [];
+    let app;
+    while ((app = await awaitPrompt("Add app name (leave blank to stop):"))) apps.push(app);
+
+    const entry = {
+      name, type: "account",
+      email: await awaitPrompt("Email:"),
+      username: await awaitPrompt("Username:"),
+      password: await awaitPrompt("Password:"),
+      websites, apps
+    };
+    entries.push(entry);
+  }
+  saveVault();
+  renderList();
+}
+
+function renderList(filtered = entries) {
+  const list = document.getElementById('entryList');
+  list.innerHTML = '';
+  filtered.forEach((entry, i) => {
+    const li = document.createElement('li');
+    if (entry.type === "wifi") {
+      li.innerHTML = `
+        <b>Name: ${entry.name}</b><br>Wi-Fi: ${entry.ssid}<br>
+        Password: ${entry.password}<br>
+        Security: ${entry.security}<br>
+        Signal: ${entry.signal}<br>
+        Router IP: ${entry.routerIP}<br>
+        IP: ${entry.deviceIP}<br>
+        Subnet: ${entry.subnet}<br>
+        DNS: ${entry.dns}<br>
+      `;
+    } else {
+      let appsHTML = entry.apps.map(app => {
+        const icon = appIcons[app] ? `<img src="${appIcons[app]}" height="16">` : '';
+        return `${icon} ${app}`;
+      }).join(", ");
+      li.innerHTML = `
+        <b>Name: ${entry.name}</b><br>Account: ${entry.username || entry.email}<br>
+        Email: ${entry.email}<br>
+        Username: ${entry.username}<br>
+        Password: ${entry.password}<br>
+        Websites: ${entry.websites.map(w => `<a href="${w}" target="_blank">${w}</a>`).join(", ")}<br>
+        Apps: ${appsHTML}<br>
+      `;
+    }
+    li.innerHTML += `<button onclick="copy('${entry.password}')">Copy Password</button>
+                     <button onclick="removeEntry(${i})">Delete</button>`;
+    list.appendChild(li);
+  });
+}
+
+function copy(text) {
+  navigator.clipboard.writeText(text).then(() => showAlert("Copied!"));
+}
+
+function removeEntry(index) {
+  if (confirm("Delete this entry?")) {
+    entries.splice(index, 1);
+    saveVault();
+    renderList();
+  }
+}
+
+function searchEntries(term) {
+  const filtered = entries.filter(e =>
+    (e.name || '').toLowerCase().includes(term.toLowerCase()) ||
+    (e.ssid || '').toLowerCase().includes(term.toLowerCase()) ||
+    (e.username || '').toLowerCase().includes(term.toLowerCase()) ||
+    (e.email || '').toLowerCase().includes(term.toLowerCase())
+  );
+  renderList(filtered);
+}
+</script>
 </body>
 </html>
